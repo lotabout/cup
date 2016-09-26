@@ -1,3 +1,3 @@
 cup
 ===
-README text here.
+A small web framework for racket.
