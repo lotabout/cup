@@ -118,7 +118,6 @@
   (check-equal? ((pattern->match "/re/<x:re:a*b?c*>") "/re/aaabccc") {'x "aaabccc"})
   (check-exn exn:fail? (lambda () (pattern->match "/wrong/pattern/<x:un"))))
 
-
 (define-struct route (method matcher callback) #:transparent)
 (define-struct parameter (names has-keyword? has-rest?) #:transparent)
 
@@ -203,19 +202,22 @@
 (define ROUTES (box '()))
 
 (define (add-route method pattern callback)
-  (set-box! ROUTES (cons (route method (pattern->match pattern) callback)
-                         (unbox ROUTES))))
+  (set-box! ROUTES (dict-update (unbox ROUTES)
+                                method
+                                (lambda (old)
+                                  (cons (route method (pattern->match pattern) callback) old))
+                                '())))
 
 (define (dispatch req)
-  (let loop ([routes (unbox ROUTES)])
+  (define method (bytes->string/utf-8 (request-method req)))
+  (let loop ([routes (dict-ref (unbox ROUTES) method '())])
     (if (null? routes)
         (response/xexpr
           `(html (head (title "Hello world!"))
                  (body (p "404"))))
         (match (car routes)
           [(route method matcher callback)
-           (if-let [params (and (equal? method (bytes->string/utf-8 (request-method req)))
-                                 (matcher (~> req request-uri url->string)))]
+           (if-let [params (matcher (~> req request-uri url->string))]
              (callback (merge-params params req))
              (loop (cdr routes)))]))))
 
