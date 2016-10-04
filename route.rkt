@@ -219,12 +219,14 @@
              (callback (merge-params params req))
              (loop (cdr routes)))]))))
 
+;; Merge the parameters extracted from requesting URL and the query/post parameters.
 (define (merge-params params request)
   (dict-merge
-    {'method (bytes->string/utf-8 (request-method request))
-     'headers (request-headers request)
-     'host-ip (request-host-ip request)
-     'host-port (request-host-port request)
-     'client-ip (request-client-ip request)}
-    (reverse (request-bindings/raw request))
+    `((method . ,(bytes->string/utf-8 (request-method request)))
+      (headers . ,(request-headers request))
+      (host-ip . ,(request-host-ip request))
+      (host-port . ,(request-host-port request))
+      (client-ip . ,(request-client-ip request))
+      (bindings . ,(request-bindings/raw request)))
+    (~> request request-uri url-query reverse)
     params))
