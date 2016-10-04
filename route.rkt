@@ -1,9 +1,14 @@
 #lang axe
 
+(require racket/contract)
+
 (provide get post put patch delete
          dispatch
          status->message
-         handler-404)
+         handler-404
+         (contract-out [add-filter (-> string?
+                                       ((or/c #f string?) . -> . (cons/c string? (-> string? any/c)))
+                                       void?)]))
 
 (require web-server/servlet
          web-server/servlet-env)
@@ -52,11 +57,15 @@
 (define DEFAULT-FILTER-PATTERN r"[^/]+")
 ;; a filter is a functino that return (conf-to-regex, str-to-param)
 (define FILTERS
-  {"int" (lambda (conf) (list r/-?\d+/, string->number)),
-   "float" (lambda (conf) (list r/-?[\d.]+/, string->number)),
-   "path" (lambda (conf) (list r/.+?/, identity))
-   "re" (lambda (conf) (list (regexp-flatten (or conf DEFAULT-FILTER-PATTERN))
-                             identity))})
+  (box {"int" (lambda (conf) (cons r/-?\d+/, string->number)),
+        "float" (lambda (conf) (cons r/-?[\d.]+/, string->number)),
+        "path" (lambda (conf) (cons r/.+?/, identity))
+        "re" (lambda (conf) (cons (regexp-flatten (or conf DEFAULT-FILTER-PATTERN))
+                                  identity))}))
+
+; (string? (string? . -> . (cons/c regexp? (string? . -> . any/c))) . -> .void?)
+(define (add-filter name custom-filter)
+  (set-box! FILTERS (dict-set (unbox FILTERS) name custom-filter)))
 
 ;; turn a URL pattern into a matcher that when feed a real URL, it will return a dictionary of params.
 ;; (string? . -> . (string? . -> dictionary?))
@@ -77,8 +86,8 @@
                    (error "pattern should be in format: '<name:filter:conf>'")]
                   [(not name) (list prefix #f #f)]
                   [else
-                    (match ((hash-ref FILTERS (or mode "re")) conf)
-                      [(list filter-regex out-filter)
+                    (match ((hash-ref (unbox FILTERS) (or mode "re")) conf)
+                      [(cons filter-regex out-filter)
                        ; output (regex-string, name of field, out-filter)
                        (list (string-append prefix "(" (regexp-flatten filter-regex) ")")
                              name
