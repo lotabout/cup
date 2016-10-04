@@ -1,7 +1,9 @@
 #lang axe
 
 (provide get post put patch delete
-         dispatch)
+         dispatch
+         status->message
+         handler-404)
 
 (require web-server/servlet
          web-server/servlet-env)
@@ -119,19 +121,19 @@
   (check-exn exn:fail? (lambda () (pattern->match "/wrong/pattern/<x:un"))))
 
 (define-struct route (method matcher callback) #:transparent)
-(define-struct parameter (names has-keyword? has-rest?) #:transparent)
+(define-struct param (names has-keyword? has-rest?) #:transparent)
 
-(define ((gen-callback parameter func) params)
+(define ((gen-callback param func) params)
   (define arg-list
     (append
-      (for/list ([name (parameter-names parameter)])
+      (for/list ([name (param-names param)])
         (params name))
-      (if (parameter-has-rest? parameter)
+      (if (param-has-rest? param)
           (list (for/fold ([params params])
-                  ([name (parameter-names parameter)])
+                  ([name (param-names param)])
                   (dict-remove params name)))
           '())))
-  (if (parameter-has-keyword? parameter)
+  (if (param-has-keyword? param)
       (apply func arg-list #:as params)
       (apply func arg-list)))
 
@@ -185,7 +187,7 @@
                       [has-keyword (if kw-name #'#t #'#f)]
                       [has-rest (if rest-name #'#t #'#f)])
           #'(add-route method pattern
-                       (gen-callback (parameter (list 'nm ...) has-keyword has-rest)
+                       (gen-callback (param (list 'nm ...) has-keyword has-rest)
                                      (lambda args . body))))])]))
 
 (define-syntax-rule (get pattern args . body)
@@ -204,17 +206,22 @@
 (define (add-route method pattern callback)
   (set-box! ROUTES (dict-update (unbox ROUTES)
                                 method
-                                (lambda (old)
-                                  (cons (route method (pattern->match pattern) callback) old))
+                                (lambda (old) (cons (route method (pattern->match pattern) callback) old))
                                 '())))
+
+;; default 404 handler
+(define handler-404
+  (make-parameter (lambda (req)
+                    (response/xexpr
+                      #:code 404
+                      #:message (status->message 404)
+                      `(html (body (p "Not Found.")))))))
 
 (define (dispatch req)
   (define method (bytes->string/utf-8 (request-method req)))
   (let loop ([routes (dict-ref (unbox ROUTES) method '())])
     (if (null? routes)
-        (response/xexpr
-          `(html (head (title "Hello world!"))
-                 (body (p "404"))))
+        ((handler-404) req)
         (match (car routes)
           [(route method matcher callback)
            (if-let [params (matcher (~> req request-uri url->string))]
@@ -232,3 +239,47 @@
       (bindings . ,(request-bindings/raw request)))
     (~> request request-uri url-query reverse)
     params))
+
+(define (status->message status)
+  (case status
+    [(100) #"Continue"]
+    [(101) #"Switching Protocols"]
+    [(200) #"OK"]
+    [(201) #"Created"]
+    [(202) #"Accepted"]
+    [(203) #"Non-Authoritative Information"]
+    [(204) #"No Content"]
+    [(205) #"Reset Content"]
+    [(206) #"Partial Content"]
+    [(300) #"Multiple Choices"]
+    [(301) #"Moved Permanently"]
+    [(302) #"Found"]
+    [(303) #"See Other"]
+    [(304) #"Not Modified"]
+    [(305) #"Use Proxy"]
+    [(307) #"Temporary Redirect"]
+    [(400) #"Bad Request"]
+    [(401) #"Unauthorized"]
+    [(402) #"Payment Required"]
+    [(403) #"Forbidden"]
+    [(404) #"Not Found"]
+    [(405) #"Method Not Allowed"]
+    [(406) #"Not Acceptable"]
+    [(407) #"Proxy Authentication Required"]
+    [(408) #"Request Timeout"]
+    [(409) #"Conflict"]
+    [(410) #"Gone"]
+    [(411) #"Length Required"]
+    [(412) #"Precondition Failed"]
+    [(413) #"Request Entity Too Large"]
+    [(414) #"Request-URI Too Long"]
+    [(415) #"Unsupported Media Type"]
+    [(416) #"Requested Range Not Satisfiable"]
+    [(417) #"Expectation Failed"]
+    [(500) #"Internal Server Error"]
+    [(501) #"Not Implemented"]
+    [(502) #"Bad Gateway"]
+    [(503) #"Service Unavailable"]
+    [(504) #"Gateway Timeout"]
+    [(505) #"HTTP Version Not Supported"]
+    [else #""]))
