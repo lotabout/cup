@@ -32,7 +32,7 @@
   (check-equal? (regexp-flatten r/((x)(x))/) r/(?:(?:x)(?:x))/)
   (check-equal? (regexp-flatten r/(?!(?=x)(x))/) r/(?!(?=x)(?:x))/))
 
-(define RULE_RE #px/([^<]*)(?:<([a-zA-Z0-9]*)(?:(?::([a-zA-Z_]*))(?::([^>]+))?)?>)?/)
+(define RULE_RE #px/([^<]*)(?:<([a-zA-Z0-9_]*)(?:(?::([a-zA-Z_]*))(?::([^>]+))?)?>)?/)
 
 (module+ test
   (check-equal? (regexp-match* RULE_RE "/hello/" :match-select cdr)
@@ -94,7 +94,8 @@
     (if-let [match-result (regexp-match pattern-regexp url)]
       (for/hash ([key (in-list name-list)]
                  [val (in-list (cdr (regexp-match pattern-regexp url)))]
-                 [out-filter (in-list out-filter-list)])
+                 [out-filter (in-list out-filter-list)]
+                 #:when (not (equal? key '_)))
           (values key (out-filter val)))
       #f)))
 
