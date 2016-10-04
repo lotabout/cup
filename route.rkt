@@ -1,7 +1,17 @@
 #lang axe
 
+(provide get post put patch delete
+         dispatch)
+
+(require web-server/servlet
+         web-server/servlet-env)
+(require (for-syntax syntax/parse
+                     racket/list
+                     racket/match))
+
 (module+ test
-  (require rackunit))
+  (require rackunit)
+  (require (for-syntax rackunit)))
 
 ;; regexp-flatten: (string? -> string?)
 ;; change the capturing groups in a regexp string into non-capturing groups
@@ -75,35 +85,146 @@
         (apply map list)))
 
   (define pattern-regexp (pregexp (string-append "^" (string-join regex-strings "") "$")))
-  (define name-list (filter identity names))
+  (define name-list (map string->symbol (filter identity names)))
   (define out-filter-list (filter identity out-filters))
 
   (lambda (url)
     (if-let [match-result (regexp-match pattern-regexp url)]
       (for/hash ([key (in-list name-list)]
-                   [val (in-list (cdr (regexp-match pattern-regexp url)))]
-                   [out-filter (in-list out-filter-list)])
+                 [val (in-list (cdr (regexp-match pattern-regexp url)))]
+                 [out-filter (in-list out-filter-list)])
           (values key (out-filter val)))
       #f)))
 
 (module+ test
-  (check-equal? ((pattern->match "/int/<x:int>") "/int/10") {"x" 10})
+  (check-equal? ((pattern->match "/int/<x:int>") "/int/10") {'x 10})
   (check-equal? ((pattern->match "/int/<x:int>/") "/int/10") #f)
   (check-equal? ((pattern->match "/int/<x:int>") "/int/abc") #f)
 
-  (check-equal? ((pattern->match "/float/<x:float>") "/float/20.32") {"x" 20.32})
+  (check-equal? ((pattern->match "/float/<x:float>") "/float/20.32") {'x 20.32})
   (check-equal? ((pattern->match "/float/<x:float>/") "/float/20.32") #f)
-  (check-equal? ((pattern->match "/float/<x:float>") "/float/20") {"x" 20})
+  (check-equal? ((pattern->match "/float/<x:float>") "/float/20") {'x 20})
   (check-equal? ((pattern->match "/float/<x:float>") "/float/20a") #f)
 
-  (check-equal? ((pattern->match "/hello/<name>") "/hello/中国") {"name" "中国"})
+  (check-equal? ((pattern->match "/hello/<name>") "/hello/中国") {'name "中国"})
   (check-equal? ((pattern->match "/hello/<name>/") "/hello/中国") #f)
-  (check-equal? ((pattern->match "/hello/<name>/") "/hello/中国/") {"name" "中国"})
+  (check-equal? ((pattern->match "/hello/<name>/") "/hello/中国/") {'name "中国"})
 
   (check-equal? ((pattern->match "/hello/<action>/<param>") "/hello/minus/10")
-                {"action" "minus", "param" "10"})
+                {'action "minus", 'param "10"})
 
   (check-equal? ((pattern->match "/hello/<x:path>") "/hello/world/I/love/you/")
-                {"x" "world/I/love/you/"})
-  (check-equal? ((pattern->match "/re/<x:re:a*b?c*>") "/re/aaabccc") {"x" "aaabccc"})
+                {'x "world/I/love/you/"})
+  (check-equal? ((pattern->match "/re/<x:re:a*b?c*>") "/re/aaabccc") {'x "aaabccc"})
   (check-exn exn:fail? (lambda () (pattern->match "/wrong/pattern/<x:un"))))
+
+
+(define-struct route (method matcher callback) #:transparent)
+(define-struct parameter (names has-keyword? has-rest?) #:transparent)
+
+(define ((gen-callback parameter func) params)
+  (define arg-list
+    (append
+      (for/list ([name (parameter-names parameter)])
+        (params name))
+      (if (parameter-has-rest? parameter)
+          (list (for/fold ([params params])
+                  ([name (parameter-names parameter)])
+                  (dict-remove params name)))
+          '())))
+  (if (parameter-has-keyword? parameter)
+      (apply func arg-list #:as params)
+      (apply func arg-list)))
+
+(define-for-syntax (parse-arg-list stx)
+  (define arg-stx-list (syntax-e stx))
+  (let loop ([arg-list arg-stx-list]
+             [nms '()]
+             [keyword #f]
+             [rest-name #f])
+    (cond
+      [(null? arg-list)
+       (list (reverse nms) keyword rest-name)]
+      [(not (pair? arg-list))
+       (list (reverse nms) keyword (syntax-e arg-list))]
+      [(keyword? (syntax-e (car arg-list)))
+        (loop (cddr arg-list) nms (syntax-e (cadr arg-list)) rest-name)]
+      [else
+        (loop (cdr arg-list) (cons (syntax-e (car arg-list)) nms) keyword rest-name)])))
+
+(module+ test
+  (begin-for-syntax
+    (check-equal? (parse-arg-list #'()) (list '() #f #f))
+    (check-equal? (parse-arg-list #'(a)) (list '(a) #f #f))
+    (check-equal? (parse-arg-list #'(a b)) (list '(a b) #f #f))
+    (check-equal? (parse-arg-list #'(a b . r)) (list '(a b) #f 'r))
+    (check-equal? (parse-arg-list #'(a b #:as k)) (list '(a b) 'k #f))
+    (check-equal? (parse-arg-list #'(a b #:as k c)) (list '(a b c) 'k #f))
+    (check-equal? (parse-arg-list #'(a b #:as k c . r)) (list '(a b c) 'k 'r))))
+
+(define-for-syntax (compose-args names keyword rest-name)
+  (define front-part (append names (if keyword `(#:as ,keyword) '())))
+  (if rest-name
+      (append (drop-right front-part 1) (cons (last front-part) rest-name))
+      front-part))
+
+(module+ test
+  (begin-for-syntax
+    (check-equal? (compose-args '() #f #f) '())
+    (check-equal? (compose-args '(a b) #f #f) '(a b))
+    (check-equal? (compose-args '(a b) 'k #f) '(a b #:as k))
+    (check-equal? (compose-args '(a b) #f 'r) '(a b . r))
+    (check-equal? (compose-args '(a b) 'k 'r) '(a b #:as k . r))))
+
+(define-syntax (gen-handler stx)
+  (syntax-case stx ()
+    [(_ method pattern arg-list . body)
+     (match (parse-arg-list #'arg-list)
+       [(list names kw-name rest-name)
+        (with-syntax ([args (datum->syntax #'arg-list (compose-args names kw-name rest-name) #'arg-list)]
+                      [(nm ...) (datum->syntax stx names stx)]
+                      [has-keyword (if kw-name #'#t #'#f)]
+                      [has-rest (if rest-name #'#t #'#f)])
+          #'(add-route method pattern
+                       (gen-callback (parameter (list 'nm ...) has-keyword has-rest)
+                                     (lambda args . body))))])]))
+
+(define-syntax-rule (get pattern args . body)
+  (gen-handler "GET" pattern args . body))
+(define-syntax-rule (post pattern args . body)
+  (gen-handler "POST" pattern args . body))
+(define-syntax-rule (put pattern args . body)
+  (gen-handler "PUT" pattern args . body))
+(define-syntax-rule (patch pattern args . body)
+  (gen-handler "PATCH" pattern args . body))
+(define-syntax-rule (delete pattern args . body)
+  (gen-handler "DELETE" pattern args . body))
+
+(define ROUTES (box '()))
+
+(define (add-route method pattern callback)
+  (set-box! ROUTES (cons (route method (pattern->match pattern) callback)
+                         (unbox ROUTES))))
+
+(define (dispatch req)
+  (let loop ([routes (unbox ROUTES)])
+    (if (null? routes)
+        (response/xexpr
+          `(html (head (title "Hello world!"))
+                 (body (p "404"))))
+        (match (car routes)
+          [(route method matcher callback)
+           (if-let [params (and (equal? method (bytes->string/utf-8 (request-method req)))
+                                 (matcher (~> req request-uri url->string)))]
+             (callback (merge-params params req))
+             (loop (cdr routes)))]))))
+
+(define (merge-params params request)
+  (dict-merge
+    {'method (bytes->string/utf-8 (request-method request))
+     'headers (request-headers request)
+     'host-ip (request-host-ip request)
+     'host-port (request-host-port request)
+     'client-ip (request-client-ip request)}
+    (reverse (request-bindings/raw request))
+    params))
